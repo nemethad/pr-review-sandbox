@@ -1,0 +1,53 @@
+name: PR review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+# A second push supersedes the review of the commit before it.
+concurrency:
+  group: prreview-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    # Drafts are skipped, and a fork PR cannot be trusted with these
+    # permissions, so it is skipped too.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install --quiet boto3
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Findings never fail the job — the review is advisory. An operational
+      # failure still surfaces, because the script says so in the comment and
+      # the step below prints it.
+      - name: Review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AGENT_RUNTIME_ARN: ${{ vars.AGENT_RUNTIME_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          python scripts/review_pr.py \
+            --repo "${{ github.repository }}" \
+            --pr "${{ github.event.pull_request.number }}" \
+          || echo "::warning::the review did not complete; see the PR comment"

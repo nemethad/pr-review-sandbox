@@ -2,4 +2,3 @@ __pycache__/
 *.pyc
 .terraform/
 terraform.tfstate*
-.github/workflows/
