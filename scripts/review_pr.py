@@ -21,7 +21,7 @@ import urllib.request
 
 MARKER = "<!-- prreview -->"
 API = "https://api.github.com"
-SEVERITY_LABEL = {"high": "High", "medium": "Medium", "low": "Low"}
+SEVERITY_LABEL = {"high": "high", "medium": "medium", "low": "low"}
 
 
 # --------------------------------------------------------------------- GitHub
@@ -114,75 +114,79 @@ def run_runtime(payload: dict, runtime_arn: str, region: str) -> dict:
 def run_local(payload: dict) -> dict:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "agent", "src"))
     from prreview_agent.agent import review
+    from prreview_agent.schema import PullRequest
 
-    return review(**payload).model_dump(mode="json")
+    return review(PullRequest.model_validate(payload)).model_dump(mode="json")
 
 
 # ----------------------------------------------------------------- the comment
 
-def render(outcome: dict, repo: str, number: int) -> str:
-    head = outcome.get("head_sha", "")[:7]
-    lines = [MARKER, "## PR review"]
+def render_finding(f: dict) -> list[str]:
+    where = f["file"] + (f":{f['line']}" if f["line"] else "")
+    lines = [
+        f"### {f['severity'].title()} · {f['title']}",
+        f"`{where}` · {f['category'].replace('_', ' ')} · "
+        f"confidence {f['confidence']:.0%}",
+        "",
+        f["explanation"].strip(),
+        "",
+        f"**Suggested:** {f['suggestion'].strip()}",
+    ]
+    if f.get("evidence"):
+        lines += ["", "```", f["evidence"].strip(), "```"]
+    if f.get("sources"):
+        lines += ["", f"<sub>from {', '.join(f['sources'])}</sub>"]
+    return lines + [""]
 
+
+def render_failure(outcome: dict) -> str:
+    """A broken review must never read like a clean one."""
+    return "\n".join([
+        MARKER,
+        "## PR review",
+        "",
+        "⚠️ **The review did not complete.** Nothing was checked — this is not "
+        "a clean result.",
+        "",
+        f"```\n{outcome.get('error', 'unknown error')}\n```",
+        "",
+        footer(outcome),
+    ])
+
+
+def footer(outcome: dict) -> str:
+    return (
+        f"<sub>commit `{outcome.get('head_sha', '')[:7]}` · "
+        f"model `{outcome.get('model_id', '?')}` · "
+        f"{outcome.get('duration_seconds', 0)}s · "
+        f"{outcome.get('input_tokens', 0)}+{outcome.get('output_tokens', 0)} tokens · "
+        f"advisory, nothing is blocked</sub>"
+    )
+
+
+def render(outcome: dict) -> str:
     if outcome.get("status") != "ok":
-        lines += [
-            "",
-            f"⚠️ **The review did not complete.** Nothing below was checked — this is "
-            f"not a clean result.",
-            "",
-            f"```\n{outcome.get('error', 'unknown error')}\n```",
-            "",
-            f"<sub>commit `{head}` · model `{outcome.get('model_id', '?')}`</sub>",
-        ]
-        return "\n".join(lines)
+        return render_failure(outcome)
 
     result = outcome["result"]
     findings = result.get("findings", [])
-
-    lines += ["", result.get("summary", "").strip()]
+    lines = [MARKER, "## PR review", "", result.get("summary", "").strip()]
 
     if result.get("ticket_key"):
-        lines.append(f"\n**Ticket:** {result['ticket_key']}")
+        lines += ["", f"**Ticket:** {result['ticket_key']}"]
 
     if not findings:
         lines += ["", "**No findings.**"]
     else:
-        counts = {}
-        for f in findings:
-            counts[f["severity"]] = counts.get(f["severity"], 0) + 1
-        tally = ", ".join(
-            f"{counts[s]} {SEVERITY_LABEL[s].lower()}"
-            for s in ("high", "medium", "low") if s in counts
-        )
+        counts = {s: sum(1 for f in findings if f["severity"] == s)
+                  for s in SEVERITY_LABEL}
+        tally = ", ".join(f"{n} {s}" for s, n in counts.items() if n)
         lines += ["", f"**{len(findings)} finding(s):** {tally}", ""]
         for f in findings:
-            where = f["file"] + (f":{f['line']}" if f["line"] else "")
-            lines += [
-                f"### {SEVERITY_LABEL[f['severity']]} · {f['title']}",
-                f"`{where}` · {f['category'].replace('_', ' ')} · "
-                f"confidence {f['confidence']:.0%}",
-                "",
-                f["explanation"].strip(),
-                "",
-                f"**Suggested:** {f['suggestion'].strip()}",
-            ]
-            if f.get("evidence"):
-                lines += ["", "```", f["evidence"].strip(), "```"]
-            if f.get("sources"):
-                lines.append(f"\n<sub>from {', '.join(f['sources'])}</sub>")
-            lines.append("")
+            lines += render_finding(f)
 
-    for note in result.get("context_notes", []):
-        lines.append(f"> ℹ️ {note}")
-
-    lines += [
-        "",
-        f"<sub>commit `{head}` · model `{outcome.get('model_id', '?')}` · "
-        f"{outcome.get('duration_seconds', 0)}s · "
-        f"{outcome.get('input_tokens', 0)}+{outcome.get('output_tokens', 0)} tokens · "
-        f"advisory, nothing is blocked</sub>",
-    ]
-    return "\n".join(lines)
+    lines += [f"> ℹ️ {note}" for note in result.get("context_notes", [])]
+    return "\n".join(lines + ["", footer(outcome)])
 
 
 # ------------------------------------------------------------------------ main
@@ -210,7 +214,7 @@ def main() -> int:
         print("head moved during the review; not publishing", file=sys.stderr)
         return 0
 
-    body = render(outcome, args.repo, args.pr)
+    body = render(outcome)
     if args.dry_run:
         print(body)
         return 0
