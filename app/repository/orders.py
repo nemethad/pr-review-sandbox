@@ -52,3 +52,10 @@ class OrderRepository:
             )
             rows = cursor.fetchall()
         return [_row_to_order(row) for row in rows]
+
+    def set_status(self, tenant_id: str, order_id: str, status: str) -> None:
+        with self._connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE orders SET status = %s WHERE tenant_id = %s AND id = %s",
+                (status, tenant_id, order_id),
+            )

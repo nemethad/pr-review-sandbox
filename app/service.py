@@ -42,3 +42,10 @@ class OrderService:
 
     def is_expired(self, order: Order) -> bool:
         return (self._clock.now() - order.created_at).days > RETENTION_DAYS
+
+
+    def cancel(self, tenant_id: str, order_id: str) -> None:
+        self._repository.set_status(tenant_id, order_id, "cancelled")
+
+    def refund(self, tenant_id: str, order_id: str) -> None:
+        self._repository.set_status(tenant_id, order_id, "refunded")
