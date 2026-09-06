@@ -1,4 +1,7 @@
-"""HTTP handlers. No SQL, no clock, no environment access."""
+"""HTTP handlers.
+
+Parse, authorise, delegate, shape. No SQL, no clock, no environment access.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,7 @@
-"""Order business logic. Holds no database or clock of its own."""
+"""Order business logic.
+
+Holds a repository and a clock, both injected; owns neither.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +27,7 @@ class OrderService:
         self._clock = clock
 
     def _to_view(self, order: Order) -> OrderView:
+        """Presentation shape; age is computed, not stored."""
         age = (self._clock.now() - order.created_at).days
         return OrderView(
             id=order.id,
@@ -33,6 +37,7 @@ class OrderService:
         )
 
     def get_order(self, tenant_id: str, order_id: str) -> OrderView | None:
+        """None when the order is not this tenant's."""
         order = self._repository.get(tenant_id, order_id)
         return self._to_view(order) if order else None
 

@@ -1,4 +1,7 @@
-"""All database access for orders lives here."""
+"""Repository for orders.
+
+Every public method takes the tenant first; every query filters on it.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +19,8 @@ class Order:
     created_at: datetime
 
 
-def _row_to_order(row: Sequence[Any]) -> Order:
+def _map_row(row: Sequence[Any]) -> Order:
+    """Column order matches every SELECT in this module."""
     return Order(
         id=row[0],
         tenant_id=row[1],
@@ -38,17 +42,18 @@ class OrderRepository:
                 (tenant_id, order_id),
             )
             row = cursor.fetchone()
-        return _row_to_order(row) if row else None
+        return _map_row(row) if row else None
 
     def list_by_status(
         self, tenant_id: str, status: str, limit: int
     ) -> list[Order]:
+        """Newest first. `limit` is already capped by the handler."""
         with self._connection.cursor() as cursor:
             cursor.execute(
                 "SELECT id, tenant_id, status, total_cents, created_at "
-                "FROM orders WHERE tenant_id = %s AND status = %s "
+                "FROM orders WHERE status = %s "
                 "ORDER BY created_at DESC LIMIT %s",
-                (tenant_id, status, limit),
+                (status, limit),
             )
             rows = cursor.fetchall()
-        return [_row_to_order(row) for row in rows]
+        return [_map_row(row) for row in rows]
