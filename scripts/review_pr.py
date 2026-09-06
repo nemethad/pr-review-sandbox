@@ -19,7 +19,7 @@ import sys
 import urllib.error
 import urllib.request
 
-MARKER = "<!-- ncfd -->"
+MARKER = "<!-- ncfda -->"
 API = "https://api.github.com"
 SEVERITY_LABEL = {"high": "high", "medium": "medium", "low": "low"}
 
@@ -61,8 +61,8 @@ def fetch_pull_request(repo: str, number: int) -> dict:
         "repo": repo,
         "changed_files": [f["filename"] for f in files],
         "diff": github(f"/repos/{repo}/pulls/{number}", accept=DIFF),
-        "rules": fetch_file(repo, pull["head"]["sha"], ".ncfd/rules.md"),
-        "conventions": conventions(fetch_file(repo, pull["head"]["sha"], ".ncfd/config.json")),
+        "rules": fetch_file(repo, pull["head"]["sha"], ".ncfda/rules.md"),
+        "conventions": conventions(fetch_file(repo, pull["head"]["sha"], ".ncfda/config.json")),
         "credentials": {"github_token": os.environ["GITHUB_TOKEN"]},
     }
 
@@ -79,7 +79,7 @@ def fetch_file(repo: str, sha: str, path: str) -> str:
 
 
 def conventions(text: str) -> dict:
-    """`.ncfd/config.json` -> the payload's `conventions` block."""
+    """`.ncfda/config.json` -> the payload's `conventions` block."""
     try:
         t = json.loads(text).get("ticket", {})
     except (ValueError, AttributeError):
@@ -122,8 +122,8 @@ def run_runtime(payload: dict, runtime_arn: str, region: str) -> dict:
 
 def run_local(payload: dict) -> dict:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "agent", "src"))
-    from ncfd.pr_review.agent import review
-    from ncfd.schema import PullRequest
+    from ncfda.pr_review.agent import review
+    from ncfda.schema import PullRequest
 
     return review(PullRequest.model_validate(payload)).model_dump(mode="json")
 
