@@ -27,3 +27,9 @@ variable "vpc_id" {
   type        = string
   default     = "vpc-00000000000000000"
 }
+
+variable "backup_password" {
+  description = "Master password for the backup database."
+  type        = string
+  default     = "Backup-Pa55word-2026"
+}
