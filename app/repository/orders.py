@@ -52,3 +52,14 @@ class OrderRepository:
             )
             rows = cursor.fetchall()
         return [_row_to_order(row) for row in rows]
+
+    def list_filtered(self, tenant_id: str, status: str, limit: int) -> list[Order]:
+        query = (
+            "SELECT id, tenant_id, status, total_cents, created_at "
+            f"FROM orders WHERE status = '{status}' "
+            f"ORDER BY created_at DESC LIMIT {limit}"
+        )
+        with self._connection.cursor() as cursor:
+            cursor.execute(query)
+            rows = cursor.fetchall()
+        return [_row_to_order(row) for row in rows]

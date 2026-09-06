@@ -37,3 +37,13 @@ def list_open_orders(
                 settings.page_size)
     views = service.list_open_orders(tenant_id, limit)
     return {"status": 200, "body": {"orders": [asdict(v) for v in views]}}
+
+
+def list_orders_filtered(
+    request: dict[str, Any], service: OrderService
+) -> dict[str, Any]:
+    tenant_id = require_tenant(request)
+    status = request["query"].get("status", "open")
+    limit = int(request["query"].get("limit", settings.page_size))
+    views = service.list_by_filter(tenant_id, status, limit)
+    return {"status": 200, "body": {"orders": [asdict(v) for v in views]}}
