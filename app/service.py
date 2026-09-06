@@ -23,13 +23,15 @@ class OrderService:
         self._repository = repository
         self._clock = clock
 
+    def _age_days(self, order: Order) -> int:
+        return (self._clock.now() - order.created_at).days
+
     def _to_view(self, order: Order) -> OrderView:
-        age = (self._clock.now() - order.created_at).days
         return OrderView(
             id=order.id,
             status=order.status,
             total_cents=order.total_cents,
-            age_days=age,
+            age_days=self._age_days(order),
         )
 
     def get_order(self, tenant_id: str, order_id: str) -> OrderView | None:
@@ -41,4 +43,4 @@ class OrderService:
         return [self._to_view(order) for order in orders]
 
     def is_expired(self, order: Order) -> bool:
-        return (self._clock.now() - order.created_at).days > RETENTION_DAYS
+        return self._age_days(order) > RETENTION_DAYS
