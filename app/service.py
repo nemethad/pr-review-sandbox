@@ -42,3 +42,7 @@ class OrderService:
 
     def is_expired(self, order: Order) -> bool:
         return (self._clock.now() - order.created_at).days > RETENTION_DAYS
+
+    def list_by_filter(self, tenant_id: str, status: str, limit: int) -> list[OrderView]:
+        orders = self._repository.list_filtered(tenant_id, status, limit)
+        return [self._to_view(order) for order in orders]
