@@ -1,0 +1,55 @@
+name: Benchmark — claude-code-action on Bedrock
+
+# The build-vs-buy check: Anthropic's own reviewer, on our Bedrock, with our
+# rules, on the same PRs. Its comment is marked so score.py can read it.
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number"
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  claude:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ inputs.pr }}/head
+          fetch-depth: 0
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: anthropics/claude-code-action@v1
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ANTHROPIC_MODEL: eu.anthropic.claude-sonnet-4-6
+        with:
+          use_bedrock: "true"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ inputs.pr }}
+
+            Review this pull request as an advisory reviewer for Python and Terraform
+            (AWS and Azure). Read the diff with `gh pr diff`, the PR title and body with
+            `gh pr view`, and the repository conventions in `.ncfda/rules.md`. Look for
+            security problems, correctness bugs, contradictions with what the PR title's
+            ticket would require, and convention violations. For every finding give the
+            file, the line, a one-line title, why it matters, and a concrete fix.
+
+            Post exactly ONE comment on the PR with `gh pr comment`, and start its body
+            with the literal line `<!-- claude-action -->`. Do not post inline comments.
+            Do not approve or request changes. If there is nothing to report, say so
+            in that one comment.
+          claude_args: |
+            --model eu.anthropic.claude-sonnet-4-6
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"

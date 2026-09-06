@@ -3,6 +3,8 @@ name: PR review
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
 
 # A second push supersedes the review of the commit before it.
 concurrency:
@@ -12,6 +14,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
   id-token: write
 
 jobs:
@@ -19,6 +22,7 @@ jobs:
     # Drafts are skipped, and a fork PR cannot be trusted with these
     # permissions, so it is skipped too.
     if: >-
+      github.event_name == 'pull_request' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -31,7 +35,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      - run: pip install --quiet boto3
+      # ruff and checkov are the deterministic floor: their results go to the
+      # agent as input to verify and cite, never straight to the PR.
+      - run: pip install --quiet boto3 ruff checkov
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -46,8 +52,35 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AGENT_RUNTIME_ARN: ${{ vars.AGENT_RUNTIME_ARN }}
           AWS_REGION: ${{ vars.AWS_REGION }}
+          NCFDA_FINDINGS_TABLE: ${{ vars.NCFDA_FINDINGS_TABLE }}
         run: |
           python scripts/review_pr.py \
             --repo "${{ github.repository }}" \
             --pr "${{ github.event.pull_request.number }}" \
           || echo "::warning::the review did not complete; see the PR comment"
+
+  # `/dismiss <n> <reason>` as a PR reply: the finding is recorded as
+  # intentional and not raised again on this PR.
+  dismiss:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/dismiss')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet boto3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          NCFDA_FINDINGS_TABLE: ${{ vars.NCFDA_FINDINGS_TABLE }}
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          python scripts/review_pr.py --repo "${{ github.repository }}" --pr "${{ github.event.issue.number }}" \
+            --dismiss "$BODY" --by "${{ github.event.comment.user.login }}"
+          gh api -X POST "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" -f content=+1 >/dev/null

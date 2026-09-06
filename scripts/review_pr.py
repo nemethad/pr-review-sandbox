@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch a pull request, run the review, publish one sticky comment.
+"""Fetch a pull request, run static tools and the review, publish the result.
 
 The canonical orchestration script. Copied into the sandbox repository during
 seeding so there is only ever one implementation.
 
-Runs the review two ways, chosen by --mode:
-  runtime  invoke AgentCore Runtime (what the workflow does)
-  local    import the agent and run it in this process (the baseline)
 """
 
 from __future__ import annotations
@@ -14,8 +11,12 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import os
+import shutil
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -64,6 +65,8 @@ def fetch_pull_request(repo: str, number: int) -> dict:
         "rules": fetch_file(repo, pull["head"]["sha"], ".ncfda/rules.md"),
         "conventions": conventions(fetch_file(repo, pull["head"]["sha"], ".ncfda/config.json")),
         "credentials": {"github_token": os.environ["GITHUB_TOKEN"]},
+        "static_findings": static_analysis([f["filename"] for f in files]),
+        "dismissed": dismissed_findings(repo, number),
     }
 
 
@@ -107,6 +110,97 @@ def publish(repo: str, number: int, body: str) -> str:
     return "created"
 
 
+# ---------------------------------------------------------- static analysis
+
+def _run(cmd: list[str]) -> str:
+    return subprocess.run(cmd, capture_output=True, text=True).stdout
+
+
+def static_analysis(changed: list[str]) -> list[dict]:
+    """ruff for Python, checkov for Terraform, when installed. Deterministic
+    input for the agent to verify and cite - never posted on their own."""
+    out: list[dict] = []
+    changed_set = set(changed)
+    if shutil.which("ruff"):
+        for r in json.loads(_run(["ruff", "check", "--output-format", "json", "--exit-zero", "."]) or "[]"):
+            f = os.path.relpath(r["filename"])
+            if f in changed_set:
+                out.append({"tool": "ruff", "file": f, "line": r["location"]["row"],
+                            "rule": r["code"], "message": r["message"]})
+    if shutil.which("checkov"):
+        raw = _run(["checkov", "-d", ".", "--quiet", "--compact", "-o", "json"]) or "{}"
+        try:
+            reports = json.loads(raw)
+        except ValueError:
+            reports = []
+        for rep in reports if isinstance(reports, list) else [reports]:
+            for c in rep.get("results", {}).get("failed_checks", []):
+                f = c["file_path"].lstrip("/")
+                if f in changed_set:
+                    out.append({"tool": "checkov", "file": f, "line": c.get("file_line_range", [0])[0],
+                                "rule": c["check_id"], "message": c["check_name"]})
+    return out[:50]
+
+
+# ------------------------------------------------------------ findings store
+
+def table():
+    name = os.environ.get("NCFDA_FINDINGS_TABLE")
+    if not name:
+        return None
+    import boto3
+
+    return boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "eu-central-1")).Table(name)
+
+
+def dismissed_findings(repo: str, number: int) -> list[dict]:
+    t = table()
+    if t is None:
+        return []
+    from boto3.dynamodb.conditions import Attr, Key
+
+    items = t.query(KeyConditionExpression=Key("pr").eq(f"{repo}#{number}"),
+                    FilterExpression=Attr("status").eq("dismissed"))["Items"]
+    seen, out = set(), []
+    for i in items:
+        if (i["file"], i["title"]) not in seen:
+            seen.add((i["file"], i["title"]))
+            out.append({"file": i["file"], "title": i["title"], "reason": i.get("reason", "")})
+    return out
+
+
+def store_findings(repo: str, number: int, outcome: dict) -> None:
+    t = table()
+    if t is None or outcome.get("status") != "ok":
+        return
+    with t.batch_writer() as w:
+        for n, f in enumerate(outcome["result"]["findings"], 1):
+            w.put_item(Item={"pr": f"{repo}#{number}", "finding": f"{outcome['head_sha']}#{n}",
+                             "n": n, "sha": outcome["head_sha"], "file": f["file"], "line": f["line"],
+                             "title": f["title"], "severity": f["severity"], "status": "open",
+                             "at": int(time.time())})
+
+
+def dismiss(repo: str, number: int, body: str, by: str) -> str:
+    """`/dismiss <n> <reason>` on the PR marks finding n of the latest review."""
+    m = re.match(r"/dismiss\s+#?(\d+)\s+(.+)", body.strip(), re.S)
+    t = table()
+    if not m or t is None:
+        return "ignored"
+    from boto3.dynamodb.conditions import Key
+
+    items = t.query(KeyConditionExpression=Key("pr").eq(f"{repo}#{number}"))["Items"]
+    latest = max((i["sha"] for i in items), key=lambda s: max(i["at"] for i in items if i["sha"] == s), default=None)
+    hit = next((i for i in items if i["sha"] == latest and int(i["n"]) == int(m.group(1))), None)
+    if not hit:
+        return "no such finding"
+    t.update_item(Key={"pr": hit["pr"], "finding": hit["finding"]},
+                  UpdateExpression="SET #s = :s, reason = :r, #b = :b",
+                  ExpressionAttributeNames={"#s": "status", "#b": "by"},
+                  ExpressionAttributeValues={":s": "dismissed", ":r": m.group(2).strip(), ":b": by})
+    return f"dismissed #{hit['n']} ({hit['title']})"
+
+
 # --------------------------------------------------------------- the reviewers
 
 def run_runtime(payload: dict, runtime_arn: str, region: str) -> dict:
@@ -120,20 +214,13 @@ def run_runtime(payload: dict, runtime_arn: str, region: str) -> dict:
     return json.loads(response["response"].read())
 
 
-def run_local(payload: dict) -> dict:
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "agent", "src"))
-    from ncfda.pr_review.agent import review
-    from ncfda.schema import PullRequest
-
-    return review(PullRequest.model_validate(payload)).model_dump(mode="json")
-
 
 # ----------------------------------------------------------------- the comment
 
-def render_finding(f: dict) -> list[str]:
+def render_finding(f: dict, n: int) -> list[str]:
     where = f["file"] + (f":{f['line']}" if f["line"] else "")
     lines = [
-        f"### {f['severity'].title()} · {f['title']}",
+        f"### #{n} · {f['severity'].title()} · {f['title']}",
         f"`{where}` · {f['category'].replace('_', ' ')} · "
         f"confidence {f['confidence']:.0%}",
         "",
@@ -191,11 +278,41 @@ def render(outcome: dict) -> str:
                   for s in SEVERITY_LABEL}
         tally = ", ".join(f"{n} {s}" for s, n in counts.items() if n)
         lines += ["", f"**{len(findings)} finding(s):** {tally}", ""]
-        for f in findings:
-            lines += render_finding(f)
+        for n, f in enumerate(findings, 1):
+            lines += render_finding(f, n)
+        lines += ["", "<sub>Reply `/dismiss <n> <reason>` to mark a finding as intentional; it will not be raised again on this PR.</sub>"]
 
     lines += [f"> ℹ️ {note}" for note in result.get("context_notes", [])]
     return "\n".join(lines + ["", footer(outcome)])
+
+
+# ------------------------------------------------------------ inline comments
+
+def publish_inline(repo: str, number: int, outcome: dict, changed: list[str]) -> int:
+    """One review comment per high/medium finding that sits on a changed line.
+    Earlier inline comments of ours are removed first, so a re-review does
+    not stack. Lines outside the diff are rejected by GitHub - those findings
+    stay in the summary only."""
+    for c in github(f"/repos/{repo}/pulls/{number}/comments?per_page=100"):
+        if MARKER in c.get("body", ""):
+            github(f"/repos/{repo}/pulls/comments/{c['id']}", "DELETE")
+    findings = outcome.get("result", {}).get("findings", []) if outcome.get("status") == "ok" else []
+    comments = [{
+        "path": f["file"], "line": f["line"], "side": "RIGHT",
+        "body": f"{MARKER}\n**#{n} · {f['severity'].title()} · {f['title']}**\n\n{f['explanation'].strip()}\n\n"
+                f"**Suggested:** {f['suggestion'].strip()}",
+    } for n, f in enumerate(findings, 1)
+        if f["severity"] in ("high", "medium") and f["line"] and f["file"] in changed]
+    posted = 0
+    for c in comments:  # one at a time: a single rejected line must not sink the rest
+        try:
+            github(f"/repos/{repo}/pulls/{number}/reviews", "POST",
+                   {"commit_id": outcome["head_sha"], "event": "COMMENT", "comments": [c]})
+            posted += 1
+        except urllib.error.HTTPError as exc:
+            if exc.code != 422:
+                raise
+    return posted
 
 
 # ------------------------------------------------------------------------ main
@@ -204,19 +321,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"))
     parser.add_argument("--pr", type=int, required=True)
-    parser.add_argument("--mode", choices=("runtime", "local"), default="runtime")
     parser.add_argument("--runtime-arn", default=os.environ.get("AGENT_RUNTIME_ARN"))
     parser.add_argument("--region", default=os.environ.get("AWS_REGION", "eu-central-1"))
     parser.add_argument("--dry-run", action="store_true",
                         help="print the comment instead of posting it")
+    parser.add_argument("--dismiss", metavar="COMMENT", help="handle a `/dismiss <n> <reason>` reply")
+    parser.add_argument("--by", default="", help="who wrote the dismiss reply")
     args = parser.parse_args()
 
+    if args.dismiss:
+        print(dismiss(args.repo, args.pr, args.dismiss, args.by), file=sys.stderr)
+        return 0
+
     payload = fetch_pull_request(args.repo, args.pr)
-    outcome = (
-        run_local(payload)
-        if args.mode == "local"
-        else run_runtime(payload, args.runtime_arn, args.region)
-    )
+    outcome = run_runtime(payload, args.runtime_arn, args.region)
 
     # A newer push means this review describes code nobody is looking at.
     if outcome.get("head_sha") and current_head(args.repo, args.pr) != outcome["head_sha"]:
@@ -229,6 +347,8 @@ def main() -> int:
         return 0
 
     print(f"comment {publish(args.repo, args.pr, body)}", file=sys.stderr)
+    print(f"inline {publish_inline(args.repo, args.pr, outcome, payload['changed_files'])}", file=sys.stderr)
+    store_findings(args.repo, args.pr, outcome)
     return 0 if outcome.get("status") == "ok" else 1
 
 
