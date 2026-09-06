@@ -61,20 +61,34 @@ def fetch_pull_request(repo: str, number: int) -> dict:
         "repo": repo,
         "changed_files": [f["filename"] for f in files],
         "diff": github(f"/repos/{repo}/pulls/{number}", accept=DIFF),
-        "rules": fetch_rules(repo, pull["head"]["sha"]),
+        "rules": fetch_file(repo, pull["head"]["sha"], ".ncfd/rules.md"),
+        "conventions": conventions(fetch_file(repo, pull["head"]["sha"], ".ncfd/config.json")),
         "credentials": {"github_token": os.environ["GITHUB_TOKEN"]},
     }
 
 
-def fetch_rules(repo: str, sha: str) -> str:
-    """Rules as of the reviewed commit, so a branch's own conventions apply."""
+def fetch_file(repo: str, sha: str, path: str) -> str:
+    """A file as of the reviewed commit, so a branch's own conventions apply."""
     try:
-        blob = github(f"/repos/{repo}/contents/.ncfd/rules.md?ref={sha}")
+        blob = github(f"/repos/{repo}/contents/{path}?ref={sha}")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return ""
         raise
     return base64.b64decode(blob["content"]).decode("utf-8", "replace")
+
+
+def conventions(text: str) -> dict:
+    """`.ncfd/config.json` -> the payload's `conventions` block."""
+    try:
+        t = json.loads(text).get("ticket", {})
+    except (ValueError, AttributeError):
+        return {}
+    out = {}
+    if "pattern" in t: out["ticket_pattern"] = t["pattern"]
+    if "sources" in t: out["ticket_sources"] = t["sources"]
+    if "required" in t: out["ticket_required"] = bool(t["required"])
+    return out
 
 
 def current_head(repo: str, number: int) -> str:
