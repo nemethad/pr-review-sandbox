@@ -12,33 +12,40 @@ Runs the review two ways, chosen by --mode:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 
-MARKER = "<!-- prreview -->"
+MARKER = "<!-- ncfd -->"
 API = "https://api.github.com"
 SEVERITY_LABEL = {"high": "high", "medium": "medium", "low": "low"}
 
 
 # --------------------------------------------------------------------- GitHub
 
-def github(path: str, method: str = "GET", payload: dict | None = None) -> dict | list:
+JSON = "application/vnd.github+json"
+DIFF = "application/vnd.github.v3.diff"
+
+
+def github(path, method="GET", payload=None, accept=JSON) -> dict | list | str:
+    """One call into the API. Returns parsed JSON, or text for a diff."""
     request = urllib.request.Request(
         f"{API}{path}",
         method=method,
         data=json.dumps(payload).encode() if payload else None,
         headers={
             "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-            "Accept": "application/vnd.github+json",
+            "Accept": accept,
             "Content-Type": "application/json",
         },
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         body = response.read()
+    if accept != JSON:
+        return body.decode("utf-8", "replace")
     return json.loads(body) if body else {}
 
 
@@ -51,34 +58,22 @@ def fetch_pull_request(repo: str, number: int) -> dict:
         "branch": pull["head"]["ref"],
         "base_ref": pull["base"]["ref"],
         "head_sha": pull["head"]["sha"],
+        "repo": repo,
         "changed_files": [f["filename"] for f in files],
-        "diff": fetch_diff(repo, number),
+        "diff": github(f"/repos/{repo}/pulls/{number}", accept=DIFF),
         "rules": fetch_rules(repo, pull["head"]["sha"]),
+        "credentials": {"github_token": os.environ["GITHUB_TOKEN"]},
     }
-
-
-def fetch_diff(repo: str, number: int) -> str:
-    request = urllib.request.Request(
-        f"{API}/repos/{repo}/pulls/{number}",
-        headers={
-            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-            "Accept": "application/vnd.github.v3.diff",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read().decode("utf-8", "replace")
 
 
 def fetch_rules(repo: str, sha: str) -> str:
     """Rules as of the reviewed commit, so a branch's own conventions apply."""
     try:
-        blob = github(f"/repos/{repo}/contents/.prreview/rules.md?ref={sha}")
+        blob = github(f"/repos/{repo}/contents/.ncfd/rules.md?ref={sha}")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return ""
         raise
-    import base64
-
     return base64.b64decode(blob["content"]).decode("utf-8", "replace")
 
 
@@ -113,8 +108,8 @@ def run_runtime(payload: dict, runtime_arn: str, region: str) -> dict:
 
 def run_local(payload: dict) -> dict:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "agent", "src"))
-    from prreview_agent.agent import review
-    from prreview_agent.schema import PullRequest
+    from ncfd.pr_review.agent import review
+    from ncfd.schema import PullRequest
 
     return review(PullRequest.model_validate(payload)).model_dump(mode="json")
 

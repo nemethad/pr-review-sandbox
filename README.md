@@ -5,4 +5,4 @@ is a real application and none of it is deployed. The Terraform files are review
 input only; the Python service is a small, coherent slice of a fictional order
 API so that reviews have somewhere plausible to find defects.
 
-Project review conventions live in [.prreview/rules.md](.prreview/rules.md).
+Project review conventions live in [.ncfd/rules.md](.ncfd/rules.md).

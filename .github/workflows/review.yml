@@ -6,7 +6,7 @@ on:
 
 # A second push supersedes the review of the commit before it.
 concurrency:
-  group: prreview-${{ github.repository }}-${{ github.event.pull_request.number }}
+  group: ncfd-${{ github.repository }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
