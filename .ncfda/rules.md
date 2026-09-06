@@ -5,9 +5,6 @@ addition to generic security and correctness review.
 
 ## Python
 
-- Inject a `Clock` instead of calling `datetime.now()` or `time.time()`
-  directly, so tests can freeze time. Every scheduling bug we have shipped
-  came from a direct clock call.
 - Database access goes through `app/repository/`. A raw SQL string or a driver
   call inside a handler is a finding regardless of how it is written.
 - Configuration is read once in `app/config.py`. Do not read `os.environ`
