@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from app.clock import Clock
 from app.repository.orders import Order, OrderRepository
@@ -42,3 +43,10 @@ class OrderService:
 
     def is_expired(self, order: Order) -> bool:
         return (self._clock.now() - order.created_at).days > RETENTION_DAYS
+
+    def summarize(self, tenant_id: str, order_id: str) -> dict[str, object]:
+        order = self._repository.get(tenant_id, order_id)
+        if order is None:
+            return {}
+        age_days = (datetime.now(timezone.utc) - order.created_at).days
+        return {"id": order.id, "status": order.status, "age_days": age_days}
