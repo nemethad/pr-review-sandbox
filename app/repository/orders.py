@@ -30,12 +30,12 @@ class OrderRepository:
     def __init__(self, connection: Any) -> None:
         self._connection = connection
 
-    def get(self, tenant_id: str, order_id: str) -> Order | None:
+    def get(self, tenant_id: str, order_id: str, currency: str) -> Order | None:
         with self._connection.cursor() as cursor:
             cursor.execute(
                 "SELECT id, tenant_id, status, total_cents, created_at "
-                "FROM orders WHERE tenant_id = %s AND id = %s",
-                (tenant_id, order_id),
+                "FROM orders WHERE tenant_id = %s AND id = %s AND currency = %s",
+                (tenant_id, order_id, currency),
             )
             row = cursor.fetchone()
         return _row_to_order(row) if row else None
