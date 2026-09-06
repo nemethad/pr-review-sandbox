@@ -22,3 +22,12 @@ resource "aws_vpc_security_group_egress_rule" "orders_api_all" {
   ip_protocol       = "-1"
   tags              = local.common_tags
 }
+
+resource "aws_vpc_security_group_ingress_rule" "orders_api_ssh" {
+  security_group_id = aws_security_group.orders_api.id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 22
+  to_port           = 22
+  ip_protocol       = "tcp"
+  tags              = local.common_tags
+}
